@@ -59,14 +59,13 @@
 > [verilator_version_switching_guide.md](./verilator_version_switching_guide.md)
 
 ### 3.2 扩充系统 Swap 空间防御 OOM
-为避免低内存环境下编译被中断，分配了额外的 6GB Swap 文件：
-```bash
-fallocate -l 6G /swapfile_extra
-chmod 600 /swapfile_extra
-mkswap /swapfile_extra
-swapon /swapfile_extra
-```
-* **当前系统内存空间**：3.3 GB RAM + 7.5 GB Swap，足以支持大型 C++ 代码生成与单线程链接。
+为避免低内存环境下编译被中断，分配并持久化了共计 10GB 的额外 Swap 文件（当前总 Swap 为 11.5GB）：
+* `/swapfile_extra` (6GB)
+* `/swapfile_extra2` (4GB)
+
+> **注意（Swap 运维与开关指南）**：
+> 有关 Swap 的持久化挂载状态、性能影响、日常查看、启停以及将来释放磁盘空间的完整指引，请参阅独立文档：
+> [swap_configuration_guide.md](./swap_configuration_guide.md)
 
 ### 3.3 启用严格单线程低负载编译参数
 通过向 Bazel 和底层硬件构建配置注入参数，严格控制并发量与资源占用：
