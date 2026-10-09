@@ -120,3 +120,9 @@ watch -n 5 free -h
   //sw/device/tests:uart_smoketest_sim_verilator
 ```
 波形可以使用 `gtkwave /tmp/sim.fst` 查看。
+
+---
+
+## 5. 远程开发与长耗时任务连接保活建议
+针对远程服务器/VPS 环境下进行长耗时任务编译与 Antigravity 交互时的网络断开风险、会话恢复（`agy resume`）及 `tmux` 最佳实践，请参阅独立专题文档：
+* [remote_session_and_tmux_guide.md](./remote_session_and_tmux_guide.md)
