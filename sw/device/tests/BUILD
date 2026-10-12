@@ -4694,6 +4694,7 @@ opentitan_test(
             "//hw/top_earlgrey:silicon_creator": None,
         },
     ),
+    verilator = verilator_params(timeout = "eternal"),
     deps = [
         "//hw/top/dt",
         "//sw/device/lib/arch:device",

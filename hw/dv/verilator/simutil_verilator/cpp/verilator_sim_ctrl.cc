@@ -353,6 +353,8 @@ void VerilatorSimCtrl::Run() {
 
   unsigned long start_reset_cycle_ = initial_reset_delay_cycles_;
   unsigned long end_reset_cycle_ = start_reset_cycle_ + reset_duration_cycles_;
+  constexpr unsigned long kProgressReportIntervalCycles = 10'000'000;
+  unsigned long next_progress_report_cycle = kProgressReportIntervalCycles;
 
   while (1) {
     unsigned long cycle_ = time_ / 2;
@@ -375,6 +377,17 @@ void VerilatorSimCtrl::Run() {
 
     top_->eval();
     time_++;
+
+    if (time_ / 2 >= next_progress_report_cycle) {
+      auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - time_begin_)
+                            .count();
+      double speed_hz = (time_ / 2) / (elapsed_ms / 1000.0);
+      std::cout << "Simulation progress: cycles=" << std::dec << time_ / 2
+                << " wallclock=" << elapsed_ms / 1000.0 << " s speed="
+                << speed_hz << " cycles/s" << std::endl;
+      next_progress_report_cycle += kProgressReportIntervalCycles;
+    }
 
     Trace();
 
