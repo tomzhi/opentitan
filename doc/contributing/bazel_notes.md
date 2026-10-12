@@ -302,13 +302,146 @@ PASS!
 18 分钟。首次运行建议直接执行测试，让 Bazel 按测试需要构建模型；只有在单独
 构建的配置与测试工具配置一致时，预先构建才有助于复用缓存。
 
-运行日志提示 UART 输出也写入了 `uart0.log`，但测试结束后，Bazel 保留的测试输出中
-没有该文件。保存的 `test.log` 包含控制台文本（包括 `PASS!`），但没有逐字节 UART
-数据或波形。今后若需分析 UART 数据流，应在运行时设法保留仿真器 UART 日志或
-采集信号轨迹。
+运行日志提示 UART 输出写入了 `uart0.log`。后续检查发现，该文件仍保留在 Bazel 的
+sandbox stash 中，内容包括 Test ROM 启动信息、测试开始和结束信息及 `PASS!`；此前只是
+没有在项目工作区或常规 `bazel-testlogs` 目录中找到它。`test.log` 也包含解码后的 UART
+控制台文本。两份文本日志都不能代替引脚级波形或逐周期信号轨迹。
+
+### UART 冒烟测试日志采集：早期调查记录
+
+本节保留最初调查时形成的结论和方案，作为历史记录。实际运行结果和当前推荐流程见下文
+“UART 冒烟测试：首次运行参考”。
+
+#### 调研结论
+
+- Earl Grey Verilator 仿真配置声明了 `UART_LOG_uart0`，但 UART DPI 源码实际查询
+  `UARTDPI_LOG_uart0`。两者名称不一致；此前重跑的实际结果及更正后的参数名见本节后文。
+  运行时指定 UART DPI 参数不需要仅为开启 UART 文本日志而重新编译 Verilator 模型。
+- 若未指定路径，UART DPI 默认写入当前目录的 `uart0.log`。上次的 Bazel `test.log`
+  记录了 `No UARTDPI_LOG_uart0 plusarg found.`，随后写出默认 `uart0.log`；该文件现已在
+  Bazel sandbox stash 中找回，大小约 348 字节，包含启动及 PASS 文本。
+- 自动化测试通过 `--test_arg=--verilator-args=<arg>` 将额外参数传给 Verilator；无需
+  修改 test wrapper。必须使用 UART DPI 源码实际查询的参数名 `UARTDPI_LOG_uart0`，不能
+  根据 `chip_sim.core` 中不匹配的 `UART_LOG_uart0` 声明推断 DPI 会识别该名称。
+- 目标在 `sw/device/tests/BUILD` 中使用 `timeout = "eternal"`。重复测试应保持上次
+  使用的 Verilator 与 make 配置，以复用 `k8-opt-exec` 仿真器缓存；此前成功运行耗时约
+  792 秒。调整运行时日志参数本身不应使仿真器重新编译，但修改 test wrapper/规则可能
+  触发 Bazel 重新分析或生成测试脚本。
+
+#### 当时拟定的方式（已由后续结果更新）
+
+1. 先只读确认当前 `opentitantool` 对 Verilator 参数的接口，以及 Bazel 测试输出归档方式；
+   决定如何把 `UART_LOG_uart0` 映射到显式输出路径。优先使用既有运行时参数，不改 DUT、
+   固件或仿真模型。如需变更规则，只做最小且可审查的改动，并在执行前列明文件和影响。
+2. 在确认日志路径能写入且会被保留后运行同一个 test target。保持线程限制及测试时限，
+   并通过 `--test_output=all` 或 streamed 输出保存完整控制台信息。不要先单独运行一个
+   配置不匹配的 `//hw:verilator` build。
+3. 将采集文件放入独立、带时间戳的参考目录（例如 `test-artifacts/uart-smoketest/<时间戳>/`），
+   避免覆盖历史材料；同时记录 Git commit、完整命令、Bazel 结果和各文件大小/校验值。
+   具体目录方案在重跑前确认，避免把临时日志误认为源码文件提交。
+
+#### 预期新增输出与完成后核对项
+
+| 文件 | 预期内容 | 重跑后检查 |
+| --- | --- | --- |
+| `test.log` | Bazel test harness、opentitantool/Verilator 启动信息、UART 控制台文本和最终结果 | 确认 target、运行参数、`PASS!`、`ExitSuccess` 均出现，且测试未被缓存命中而跳过执行 |
+| `test.xml` | Bazel 测试状态、耗时和结果元数据 | 确认状态为成功、时长与本次实际运行相符 |
+| `uart0.log` | UART DPI 解码后写出的字符流 | 确认文件非空，包含 ROM 启动、`Running`、`Finished`、`PASS!`；与 `test.log` 中 UART 文本比对 |
+| `run_command.txt`（或同等元数据文件） | 完整命令、Git commit、运行时间、构建参数与超时参数 | 确认可据此复现本次配置 |
+| `manifest.sha256`（或同等校验清单） | 归档日志的文件名、大小及 SHA-256 | 确认归档完整、重跑后可检测文件变化 |
+
+`uart0.log` 的默认输出只是 UART 字符日志，不含时间戳、波特率采样点或总线波形。如果
+需要研究字符出现的精确仿真周期或 UART 引脚电平，还需另行设计 trace/FST 采集方案；这
+不属于本次基线重跑的默认范围。重跑结束后，应按表逐项确认文件是否存在、内容是否符合
+预期，并将实际结果补记在本节。
 
 本次调查期间加入的仿真进度心跳每 10,000,000 个周期输出一次。本次通过运行的保存
 日志中没有心跳记录，因此这次运行没有通过该监控提供周期速度数据。
+
+### UART 冒烟测试：首次运行参考（2026-10-12）
+
+#### 参数名称排查记录
+
+在备份此前成功运行日志后，运行了以下命令：
+
+```sh
+./bazelisk.sh test --test_output=streamed --test_timeout=60,3000,15000,72000 \
+  --//hw:verilator_options=--threads,2 \
+  --//hw:make_options=-j,1 \
+  --test_arg=--verilator-args=+UART_LOG_uart0=uart0.log \
+  //sw/device/tests:uart_smoketest_sim_verilator
+```
+
+测试实际执行并通过，测试耗时约 852.5 秒，Bazel 总耗时约 861.9 秒。`test.log` 包含
+固件输出 `PASS!`、`opentitantool` 的 `ExitSuccess("PASS!\\r\\n")` 和成功结果；
+`test.xml` 显示 `failures="0"`、`errors="0"`，测试状态为 `run`。本次 `uart0.log`
+包含 Test ROM 启动、冒烟测试开始与结束以及 `PASS!`，可确认 UART 收到了字符流。
+
+日志参数验收未通过：本次 `test.log` 显示参数
+`+UART_LOG_uart0=uart0.log` 已传到仿真器，但启动信息仍为
+`No UARTDPI_LOG_uart0 plusarg found.`。因此 DPI 未识别指定的参数名，使用默认文件名
+`uart0.log`。本次通过结果和 UART 字符流均有日志交叉验证，但不能据此认定自定义日志路径
+参数生效。归档目录为
+`test-artifacts/uart-smoketest/20261012_1318_rerun/`，含 `test.log`、`test.xml`、
+`uart0.log`、`run_command.txt` 和 `manifest.sha256`。
+
+`hw/top_earlgrey/dv/verilator/chip_sim_tb.sv` 实例化 UART DPI 时使用默认 `NAME="uart0"`。
+`hw/dv/dpi/uartdpi/uartdpi.sv` 拼出参数名 `UARTDPI_LOG_<NAME>`，并用
+`$value$plusargs` 查询。因此 Earl Grey UART DPI 实际查询的名称是
+`UARTDPI_LOG_uart0`。`hw/top_earlgrey/dv/verilator/chip_sim.core` 中声明的
+`UART_LOG_uart0` 与该查询名称不一致；上一次使用它时参数确实被传给仿真器，但未被 DPI
+识别。`opentitantool` 的 `--verilator-args` 会把额外参数传给仿真器，因此下一次改用
+`+UARTDPI_LOG_uart0=uart0_custom.log`。这是运行时参数变更，不需要改 DUT、固件或 test
+wrapper，也不需要仅为该参数重新编译仿真模型。
+
+首次运行及后续复测建议使用以下命令。它通过正确的 plusarg 名称将 UART 字符日志写入
+测试工作目录中的唯一文件 `uart0_custom.log`：
+
+```sh
+./bazelisk.sh test \
+  --test_output=streamed \
+  --test_timeout=60,3000,15000,72000 \
+  --//hw:verilator_options=--threads,2 \
+  --//hw:make_options=-j,1 \
+  --test_arg=--verilator-args=+UARTDPI_LOG_uart0=uart0_custom.log \
+  //sw/device/tests:uart_smoketest_sim_verilator
+```
+
+首次运行不需要先单独执行 `bazel build //hw:verilator`；让 Bazel 使用测试所需配置构建
+仿真器。运行结束后，从 Bazel 的 testlogs 和 sandbox stash 中复制日志到新的时间戳归档
+目录，不覆盖以前的记录。验收目标如下：
+
+| 项目 | 验收标准 |
+| --- | --- |
+| Bazel 测试结果 | 目标确实执行而非缓存跳过；测试通过，`test.log` 有 `PASS!`、`ExitSuccess` 和成功结果 |
+| `test.xml` | 测试状态为 `run`，`failures="0"`、`errors="0"`，耗时与本次运行相符 |
+| plusarg 识别 | 启动日志不再出现 `No UARTDPI_LOG_uart0 plusarg found.` |
+| UART 日志 | sandbox 保留目录中存在非空的 `uart0_custom.log`，且包含 ROM 启动、测试开始、测试结束和 `PASS!` |
+| 可复现与完整性 | 归档完整命令、Git commit、运行时间、Bazel 结果、`test.log`、`test.xml`、UART 日志及 SHA-256 清单，并核对校验值 |
+
+`test.log` 与 `test.xml` 位于 Bazel 输出根目录下的
+`execroot/_main/bazel-out/<configuration>/testlogs/sw/device/tests/uart_smoketest_sim_verilator/`。
+UART 日志由测试进程写在 runfiles 工作目录，测试结束后可在 Bazel sandbox stash 中查找
+`uart_smoketest_sim_verilator` 对应的 `uart0_custom.log`。本次环境中该文件保留在
+`sandbox/sandbox_stash/TestRunner/<id>/...` 下。归档时将它与 testlogs 中的两个文件一起
+复制，并为本次运行记录完整命令、Git commit、开始/结束时间、Bazel 结果及 SHA-256。
+
+`uart0_custom.log` 和 `test.log` 中的控制台文本是解码后的 UART 字符流，不是引脚波形或
+逐周期信号轨迹。
+
+#### 按推荐命令完成的首次运行结果
+
+按上述命令运行后，测试实际执行并通过。Bazel 报告测试耗时 854.3 秒，总耗时
+860.596 秒；`test.xml` 状态为 `run`，`failures="0"`、`errors="0"`，记录耗时 854 秒。
+`test.log` 包含 `PASS!`、`ExitSuccess("PASS!\r\n")` 和 `Command result: success.`。
+启动信息没有 `No UARTDPI_LOG_uart0 plusarg found.`，而是明确显示
+`UART: Additionally writing all UART output to 'uart0_custom.log'.`。
+
+本次 sandbox stash 中确实存在非空 `uart0_custom.log`，包含 Test ROM 启动、测试开始、
+测试结束和 `PASS!`。因此测试通过、UART DPI 参数识别及自定义日志文件验收项均通过。
+归档位于 `test-artifacts/uart-smoketest/20261012_1548_corrected_plusarg/`，包含
+`test.log`、`test.xml`、`uart0_custom.log`、`run_command.txt` 和 `manifest.sha256`；
+已用清单核对全部文件校验值，均通过。
 
 # 其他说明
 
